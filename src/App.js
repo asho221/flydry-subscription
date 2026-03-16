@@ -300,7 +300,7 @@ You MUST output ONLY a valid JSON object matching this exact structure:
         <p className="text-gray-500 mt-2">Select how many bags you need to be serviced per month.</p>
         
         {/* Gemini AI Integration */}
-        <div className="mt-6 max-w-lg mx-auto">
+        <div className="mt-6 max-w-xl mx-auto">
           {!showAiHelper ? (
             <button 
               onClick={() => setShowAiHelper(true)}
@@ -419,7 +419,7 @@ You MUST output ONLY a valid JSON object matching this exact structure:
           <p className="text-gray-500 mt-2">How many times should we pick up your {selectedBags} {selectedBags === 1 ? 'bag' : 'bags'}?</p>
         </div>
 
-        <div className="space-y-3 max-w-md mx-auto">
+        <div className="space-y-3 max-w-xl mx-auto">
           {pickupOptions.map((pickupCount) => {
             const planDetails = pricingData[selectedBags][pickupCount];
             const isSelected = selectedPickups === pickupCount;
@@ -455,7 +455,7 @@ You MUST output ONLY a valid JSON object matching this exact structure:
           })}
         </div>
 
-        <div className="flex justify-between items-center max-w-md mx-auto pt-6">
+        <div className="flex justify-between items-center max-w-xl mx-auto pt-6">
           <button 
             onClick={() => setStep(1)}
             className="flex items-center gap-2 px-4 py-2 text-gray-500 hover:text-gray-900 transition-colors font-medium"
@@ -480,7 +480,7 @@ You MUST output ONLY a valid JSON object matching this exact structure:
   };
 
   const renderStep3 = () => (
-    <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500 max-w-md mx-auto">
+    <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500 max-w-xl mx-auto">
       <div className="text-center">
         <h2 className="text-2xl font-bold text-gray-900 tracking-tight">Your Flydry Bag</h2>
         <p className="text-gray-500 mt-2">How your monthly quota works</p>
@@ -555,7 +555,7 @@ You MUST output ONLY a valid JSON object matching this exact structure:
   );
 
   const renderStep4 = () => (
-    <div className="max-w-md mx-auto space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+    <div className="max-w-xl mx-auto space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
       <div className="text-center">
         <h2 className="text-2xl font-bold text-gray-900 tracking-tight">Order Summary</h2>
         <p className="text-gray-500 mt-2">Review your subscription details</p>
@@ -681,7 +681,7 @@ You MUST output ONLY a valid JSON object matching this exact structure:
     }, 0);
 
     return (
-      <div className="max-w-md mx-auto space-y-6 animate-in fade-in slide-in-from-right-4 duration-500">
+      <div className="max-w-xl mx-auto space-y-6 animate-in fade-in slide-in-from-right-4 duration-500">
         <div className="text-center">
           <div className="mx-auto w-16 h-16 rounded-full flex items-center justify-center mb-4 shadow-sm" style={{ backgroundColor: brand.greenLight, color: brand.green }}>
             <CheckCircle size={32} />
@@ -892,13 +892,13 @@ You MUST output ONLY a valid JSON object matching this exact structure:
   };
 
   return (
-    <div className="min-h-screen bg-[#FDFDFD] flex flex-col items-center justify-center p-4 sm:p-8 font-sans">
-      <div className="w-full max-w-3xl bg-white rounded-3xl shadow-xl border border-gray-100 overflow-hidden p-6 sm:p-10">
+    <div className="w-full bg-[#FDFDFD] flex flex-col items-center py-6 sm:py-8 px-4 sm:px-8 font-sans">
+      <div className="w-full max-w-4xl bg-white rounded-3xl shadow-xl border border-gray-100 overflow-hidden p-6 sm:p-10">
         
         {/* Progress Stepper */}
         {(!isSuccess && step < 5) && (
           <div className="flex justify-center items-center mb-10">
-            <div className="flex items-center w-full max-w-md">
+            <div className="flex items-center w-full max-w-lg">
               <div 
                 className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm shadow-sm ${step >= 1 ? 'text-white' : 'bg-gray-100 text-gray-400'}`}
                 style={step >= 1 ? { backgroundColor: brand.copper } : {}}

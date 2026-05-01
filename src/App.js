@@ -1,251 +1,286 @@
-import React, { useState } from 'react';
-import { ShoppingBag, Truck, Calendar, CreditCard, CheckCircle, ArrowRight, ArrowLeft, Sparkles, Bot, Loader2, Clock, Plus, Check, Shirt, Cloud } from 'lucide-react';
-
-// Pricing Data mapped directly from your provided table
-const pricingData = {
-  1: {
-    1: { total: 30, perBag: 30 }
+import React, { useState, useId, useMemo } from 'react';
+import {
+  ShoppingBag, Truck, CreditCard, CheckCircle,
+  CheckCircle2, ArrowRight, ArrowLeft, Sparkles, Bot,
+  Loader2, Info, Leaf, Shield, Clock
+} from 'lucide-react';
+// --- 1. GLOBAL CONFIGURATION (Single Source of Truth) ---
+const CONFIG = {
+  BRAND_NAME: "Flydry",
+  BAG_WEIGHT_KG: 10,
+  STANDARD_PRICE_PER_KG: 3.5,
+  STANDARD_DELIVERY_FEE: 2.0,
+  TRIAL_PRICE: 10,
+  TRIAL_DAYS: 14,
+  DISCOUNTS: { 1: 0, 3: 0.05, 6: 0.10, 12: 0.20 },
+  PRICING_DATA: {
+    1: { 1: { total: 30, perBag: 30 } },
+    2: {
+      1: { total: 46, perBag: 23 },
+      2: { total: 52, perBag: 26 }
+    },
+    4: {
+      1: { total: 80, perBag: 20 },
+      2: { total: 88, perBag: 22 },
+      4: { total: 96, perBag: 24 }
+    }
   },
-  2: {
-    1: { total: 46, perBag: 23 },
-    2: { total: 52, perBag: 26 }
-  },
-  4: {
-    1: { total: 80, perBag: 20 },
-    2: { total: 88, perBag: 22 },
-    3: { total: 92, perBag: 23 },
-    4: { total: 96, perBag: 24 }
-  }
+  BACKEND_URL: "https://flydry-subscription-backend.vercel.app",
+  CLEANCLOUD_STORE_ID: 35905,
 };
-
-export default function App() {
-  const [step, setStep] = useState(1);
-  const [selectedBags, setSelectedBags] = useState(null);
-  const [selectedPickups, setSelectedPickups] = useState(null);
-  const [billingCycle, setBillingCycle] = useState(1); // 1, 3, 6, 12
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [isSuccess, setIsSuccess] = useState(false);
-  const [isProcessingUpsell, setIsProcessingUpsell] = useState(false); // New state for second payment
-  const [pickupDates, setPickupDates] = useState([]); // Replaced single date with an array
-  const [pickupTimes, setPickupTimes] = useState([]); // Array to store time slots for each pickup
-  const [selectedUpsells, setSelectedUpsells] = useState([]); // Track selected one-off services
-
-  // Upsell Options Data
-  const upsellOptions = [
-    { id: 'shoes', title: 'Premium Shoe Clean', original: 20, discounted: 15, icon: Sparkles },
-    { id: 'duvet', title: 'Winter Duvet Wash', original: 25, discounted: 18, icon: Cloud },
-    { id: 'suit', title: '2-Piece Suit Dry Clean', original: 18, discounted: 14, icon: Shirt }
-  ];
-
-  const toggleUpsell = (id) => {
-    setSelectedUpsells(prev => 
-      prev.includes(id) ? prev.filter(item => item !== id) : [...prev, id]
-    );
-  };
-
-  // Gemini API States
-  const [showAiHelper, setShowAiHelper] = useState(false);
-  const [aiInput, setAiInput] = useState("");
-  const [isAiLoading, setIsAiLoading] = useState(false);
-  const [aiRecommendation, setAiRecommendation] = useState(null);
-  const [aiError, setAiError] = useState("");
-
-  // Helper for API retries
-  const fetchWithRetry = async (url, options, maxRetries = 5) => {
-    const delays = [1000, 2000, 4000, 8000, 16000];
-    for (let i = 0; i < maxRetries; i++) {
-      try {
-        const response = await fetch(url, options);
-        if (!response.ok) {
-          const error = new Error(`HTTP error! status: ${response.status}`);
-          error.status = response.status;
-          throw error;
-        }
-        return await response.json();
-      } catch (e) {
-        // Do not retry on client errors that won't resolve with time (like 400, 401, 403, 404)
-        if (e.status === 400 || e.status === 401 || e.status === 403 || e.status === 404 || i === maxRetries - 1) {
-          throw e;
-        }
-        await new Promise(resolve => setTimeout(resolve, delays[i]));
-      }
+// --- 2. UTILITY COMPONENTS ---
+const useKeyboardAction = (callback) => {
+  return (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      callback();
     }
   };
+};
+// --- 3. SUB-COMPONENTS ---
+function SubscriptionHero({ onStart }) {
+  const bagClipId = useId();
 
-  const getAiRecommendation = async () => {
-    if (!aiInput.trim()) return;
-    setIsAiLoading(true);
-    setAiError("");
-    setAiRecommendation(null);
-
-    const apiKey = ""; 
-    const systemPrompt = `You are an expert laundry assistant for Flydry. 
-Recommend a subscription plan based on the user's needs.
-Available bags per month: 1, 2, or 4. (1 bag = 10kg).
-Available pickups per month:
-- 1 bag: exactly 1 pickup
-- 2 bags: 1 or 2 pickups
-- 4 bags: 1, 2, 3, or 4 pickups
-
-You MUST output ONLY a valid JSON object matching this exact structure:
-{
-  "bags": (either 1, 2, or 4),
-  "pickups": (number based on bags rule),
-  "reasoning": "A short, friendly sentence explaining why this plan fits."
-}`;
-
-    const payload = {
-      contents: [{ parts: [{ text: aiInput }] }],
-      systemInstruction: { parts: [{ text: systemPrompt }] },
-      generationConfig: { 
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: "OBJECT",
-          properties: {
-            bags: { type: "INTEGER" },
-            pickups: { type: "INTEGER" },
-            reasoning: { type: "STRING" }
-          }
-        }
-      }
-    };
-
-    try {
-      const data = await fetchWithRetry(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload)
-        }
-      );
-      
-      let resultText = data.candidates?.[0]?.content?.parts?.[0]?.text;
-      if (resultText) {
-        // Clean up potential markdown formatting that breaks JSON parsing
-        resultText = resultText.replace(/```json/gi, '').replace(/```/g, '').trim();
-        const parsed = JSON.parse(resultText);
-        setAiRecommendation(parsed);
-      } else {
-        throw new Error("Invalid or empty response format from AI");
-      }
-    } catch (err) {
-      console.error("AI Assistant Error:", err);
-      
-      // Fallback: If we get a 401 (expired preview session token) or network issue, 
-      // instantly switch to a smart offline recommendation mode so the app doesn't break for the user!
-      const lowerInput = aiInput.toLowerCase();
-      let fallbackRec = { bags: 1, pickups: 1, reasoning: "Our 1-bag plan with 1 pickup is a great starting point." };
-      
-      if (lowerInput.includes("family") || lowerInput.includes("kids") || lowerInput.includes("four") || lowerInput.includes("4")) {
-        fallbackRec = { bags: 4, pickups: 4, reasoning: "For families, our 4-bag plan with weekly pickups is the most convenient to keep up with laundry." };
-      } else if (lowerInput.includes("couple") || lowerInput.includes("partner") || lowerInput.includes("two") || lowerInput.includes("2") || lowerInput.includes("wife") || lowerInput.includes("husband")) {
-        fallbackRec = { bags: 2, pickups: 2, reasoning: "For couples or active individuals, 2 bags and bi-weekly pickups usually works perfectly." };
-      }
-
-      setAiRecommendation(fallbackRec);
-      setAiError(err.status === 401 
-        ? "Note: Live connection expired. Displaying offline smart recommendation instead." 
-        : "Note: Live AI unavailable. Displaying offline smart recommendation instead.");
-    } finally {
-      setIsAiLoading(false);
+  const steps = useMemo(() => [
+    {
+      id: 'volume',
+      title: "Select Volume",
+      desc: `Choose 1, 2, or 4 of our Signature ${CONFIG.BAG_WEIGHT_KG}kg Bags per month.`,
+      artwork: (
+        <svg viewBox="0 0 64 64" className="w-20 h-20 md:w-24 md:h-24 text-[#082219] group-hover:text-[#C5A059] transition-colors duration-500 relative z-10" aria-hidden="true">
+          <path d="M16 20 L48 20 L52 56 L12 56 Z" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+          <path d="M24 20 C24 10, 40 10, 40 20" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+          <clipPath id={bagClipId}><path d="M16 20 L48 20 L52 56 L12 56 Z" /></clipPath>
+          <g clipPath={`url(#${bagClipId})`}>
+            <path d="M 0 40 Q 16 36 32 40 T 64 40 T 96 40 T 128 40 V 64 H 0 Z" fill="currentColor" fillOpacity="0.15" className="anim-wave group-hover:fill-opacity-25 transition-all duration-500" />
+          </g>
+          <rect x="22" y="34" width="20" height="10" rx="2" fill="currentColor" className="opacity-10 group-hover:opacity-100 transition-opacity duration-500" />
+          <text x="32" y="41" fill="white" fontSize="5" fontFamily="sans-serif" fontWeight="bold" textAnchor="middle" className="opacity-0 group-hover:opacity-100 transition-opacity duration-500">{CONFIG.BAG_WEIGHT_KG}KG</text>
+        </svg>
+      )
+    },
+    {
+      id: 'routine',
+      title: "Set Routine",
+      desc: "Set a flexible schedule for your automated collections. No booking required.",
+      artwork: (
+        <svg viewBox="0 0 64 64" className="w-20 h-20 md:w-24 md:h-24 text-[#082219] group-hover:text-[#C5A059] transition-colors duration-500 relative z-10" aria-hidden="true">
+          <rect x="14" y="18" width="36" height="32" rx="2" fill="none" stroke="currentColor" strokeWidth="1.5" />
+          <line x1="14" y1="26" x2="50" y2="26" stroke="currentColor" strokeWidth="1.5" />
+          <circle cx="22" cy="34" r="2.5" fill="currentColor" className="anim-sparkle" />
+          <circle cx="42" cy="42" r="2.5" fill="currentColor" className="anim-sparkle" style={{ animationDelay: '1s' }} />
+          <path d="M 22 34 L 42 34 L 42 42" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" className="anim-route" />
+        </svg>
+      )
+    },
+    {
+      id: 'result',
+      title: "Fresh Delivery",
+      desc: "Returned to your door impeccably clean and perfectly stacked.",
+      artwork: (
+        <svg viewBox="0 0 64 64" className="w-20 h-20 md:w-24 md:h-24 text-[#082219] group-hover:text-[#C5A059] transition-colors duration-500 relative z-10" aria-hidden="true">
+          <rect x="16" y="44" width="32" height="5" rx="1.5" fill="none" stroke="currentColor" strokeWidth="1.5" opacity="0.3" />
+          <g className="anim-drop">
+             <rect x="20" y="30" width="24" height="5" rx="1.5" fill="none" stroke="currentColor" strokeWidth="1.5" />
+             <path d="M 32 26 L 34 23 L 37 22 L 34 21 L 32 18 L 30 21 L 27 22 L 30 23 Z" fill="currentColor" className="anim-sparkle" style={{ animationDelay: '0.8s' }} />
+          </g>
+        </svg>
+      )
     }
-  };
-
-  const applyAiRecommendation = () => {
-    if (aiRecommendation) {
-      setSelectedBags(aiRecommendation.bags);
-      setSelectedPickups(aiRecommendation.pickups);
-      setStep(3); // Skip step 2 since AI chose pickups too
-    }
-  };
-
-  // Brand Colors mapped from your logo/bag
-  const brand = {
-    copper: '#C8905B',       // Flydry text/logo color
-    copperHover: '#A66E3D',  // Darker copper for hovers
-    copperLight: '#FAF4EE',  // Very soft copper tint for selected backgrounds
-    green: '#155c32',        // Forest green from the bag straps
-    greenLight: '#E8F3ED',   // Soft green for savings badges
-  };
-
-  // Handle Bag Selection
-  const handleBagSelect = (bags) => {
-    setSelectedBags(bags);
-    setSelectedPickups(null);
-    setStep(2);
-  };
-
-  const handlePickupSelect = (pickups) => {
-    setSelectedPickups(pickups);
-  };
-
-  const handleNextToInfo = () => {
-    if (selectedPickups) setStep(3);
-  };
-
-  const handleSubscribe = () => {
-    setIsProcessing(true);
+  ], [bagClipId]);
+  return (
+    <section className="relative w-full bg-white text-[#082219] pt-16 pb-10 md:pt-20 md:pb-12 overflow-hidden font-sans selection:bg-[#C5A059] selection:text-white">
+      <style>{`
+        .bg-subtle-grid { background-image: radial-gradient(rgba(8, 34, 25, 0.04) 1px, transparent 1px); background-size: 32px 32px; }
+        @keyframes wave-slide { 0% { transform: translateX(0); } 100% { transform: translateX(-64px); } }
+        .anim-wave { animation: wave-slide 4s linear infinite; }
+        @keyframes route-trace { 0%, 100% { stroke-dashoffset: 60; opacity: 0; } 20%, 80% { stroke-dashoffset: 0; opacity: 1; } }
+        .anim-route { stroke-dasharray: 60; animation: route-trace 4s ease-in-out infinite; }
+        @keyframes drop-fold { 0%, 100% { transform: translateY(-12px); opacity: 0; } 20%, 80% { transform: translateY(0); opacity: 1; } }
+        .anim-drop { animation: drop-fold 4s cubic-bezier(0.4, 0, 0.2, 1) infinite; }
+        @keyframes sparkle-fade { 0%, 100% { opacity: 0; transform: scale(0.8); } 50% { opacity: 1; transform: scale(1); } }
+        .anim-sparkle { animation: sparkle-fade 2s ease-in-out infinite; transform-origin: center; }
+        .text-shimmer { background: linear-gradient(to right, #C5A059 20%, #e8d5b5 40%, #e8d5b5 60%, #C5A059 80%); background-size: 200% auto; color: transparent; -webkit-background-clip: text; background-clip: text; animation: shimmer-text 10s linear infinite; }
+        @keyframes shimmer-text { 0% { background-position: -200% center; } 100% { background-position: 200% center; } }
+        @keyframes coinFlip { 0%, 40% { transform: rotateY(0deg); } 50%, 90% { transform: rotateY(180deg); } 100% { transform: rotateY(360deg); } }
+        .exec-card { transition: all 0.5s cubic-bezier(0.16, 1, 0.3, 1); background: #ffffff; }
+        .exec-card:hover { transform: translateY(-4px); box-shadow: 0 24px 48px -12px rgba(8, 34, 25, 0.08); border-color: rgba(197, 160, 89, 0.25); }
+      `}</style>
+      <div className="absolute inset-0 bg-subtle-grid pointer-events-none" />
+      <div className="max-w-[1300px] mx-auto px-8 md:px-12 lg:px-16 relative z-10 flex flex-col lg:flex-row items-center gap-12 lg:gap-20">
+        <div className="w-full lg:w-[45%] flex flex-col justify-center text-left relative z-20">
+          <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-[#C5A059] text-[#082219] text-[11px] font-black uppercase tracking-[0.2em] mb-6 w-max shadow-lg animate-pulse">
+            <Sparkles size={14} /> £{CONFIG.TRIAL_PRICE} Introductory Trial
+          </div>
+          <h2 className="text-5xl md:text-6xl lg:text-[4.5rem] font-black tracking-tighter uppercase italic leading-[0.9] text-[#082219] mb-5">
+            Your First Bag is <br/> <span className="text-shimmer">Just £{CONFIG.TRIAL_PRICE}.</span>
+          </h2>
+          <p className="text-gray-500 text-sm md:text-base font-medium leading-relaxed max-w-lg mb-8">
+            The definitive zero-friction routine. <strong className="text-[#082219]">Pay just £{CONFIG.TRIAL_PRICE} today</strong> for a full {CONFIG.BAG_WEIGHT_KG}kg Wash & Fold trial. If you love it, roll into a monthly plan. If not, cancel in 3 clicks.
+          </p>
+          <div className="flex flex-col gap-3 mb-8">
+            {['No weighing. No hidden fees.', 'We collect, clean, and deliver.', `Risk-free ${CONFIG.TRIAL_DAYS}-day guarantee.`].map((item, i) => (
+              <div key={i} className="flex items-center gap-3 text-[13px] font-bold text-[#082219]">
+                <CheckCircle2 size={18} className="text-[#9E7C2E]" /> {item}
+              </div>
+            ))}
+          </div>
+          <button onClick={onStart} className="group inline-flex items-center justify-center w-max gap-3 bg-[#082219] text-[#C5A059] px-8 py-5 rounded-xl text-sm font-black uppercase tracking-widest hover:bg-[#C5A059] hover:text-[#082219] transition-all shadow-xl">
+            Claim £{CONFIG.TRIAL_PRICE} Trial Bag
+            <ArrowRight size={20} className="group-hover:translate-x-1.5 transition-transform" />
+          </button>
+        </div>
+        <div className="w-full lg:w-[55%] grid grid-cols-1 md:grid-cols-3 gap-5 md:gap-6 relative z-10">
+          {steps.map((step) => (
+            <div key={step.id} onClick={onStart} className="exec-card group flex flex-row md:flex-col items-center md:items-start p-6 md:p-8 rounded-[1.5rem] border border-gray-100 cursor-pointer relative overflow-hidden">
+              <div className="flex-shrink-0 md:w-full flex md:justify-center mb-0 md:mb-6 mr-6 md:mr-0">{step.artwork}</div>
+              <div className="flex-1 md:text-center w-full">
+                <h3 className="text-[17px] md:text-[19px] font-black uppercase italic tracking-tight text-[#082219] mb-1.5 group-hover:text-[#C5A059] transition-colors">{step.title}</h3>
+                <p className="text-[12px] text-gray-500 font-medium leading-relaxed">{step.desc}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+function PlanFinder({ onApply }) {
+  const [input, setInput] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [rec, setRec] = useState(null);
+  const findPlan = () => {
+    if (!input.trim()) return;
+    setLoading(true);
     setTimeout(() => {
-      setIsProcessing(false);
-      setStep(5); // Move to scheduling step instead of success immediately
+      const text = input.toLowerCase();
+      let bags = 2;
+      let pickups = 1;
+      let reason = "Our most popular 2-bag plan provides a great balance of flexibility and value.";
+      if (/family|kids|household|4|5/i.test(text)) {
+        bags = 4; pickups = 2; reason = "For households, the 4-bag plan ensures you never fall behind.";
+      } else if (/alone|just me|1 person/i.test(text)) {
+        bags = 1; pickups = 1; reason = "For one person, 1 signature bag per month is incredibly cost-effective.";
+      }
+      setRec({ bags, pickups, reason });
+      setLoading(false);
     }, 1500);
   };
-
-  const handleConfirmSchedule = () => {
-    if (selectedUpsells.length > 0) {
-      // Simulate separate payment for the upsells
-      setIsProcessingUpsell(true);
-      setTimeout(() => {
-        setIsProcessingUpsell(false);
-        setIsSuccess(true);
-      }, 1500);
-    } else {
+  return (
+    <div className="bg-white p-6 rounded-[1.5rem] border border-gray-200 text-left shadow-sm mt-8 w-full max-w-md mx-auto md:mx-0">
+      <div className="flex items-center gap-2 mb-4">
+        <Bot size={20} className="text-[#082219]" />
+        <span className="font-black text-[#082219] uppercase tracking-widest text-xs">Flydry Plan Finder</span>
+      </div>
+      <textarea
+        value={input} onChange={(e) => setInput(e.target.value)}
+        placeholder="E.g., I live with my partner, we work out a lot..."
+        className="w-full p-4 rounded-xl border border-gray-200 focus:border-[#C5A059] focus:ring-1 focus:ring-[#C5A059] resize-none text-sm font-medium transition-all"
+        rows={2}
+      />
+      {rec ? (
+        <div className="mt-4 p-4 rounded-xl bg-[#082219]/5 border border-[#082219]/10 animate-in fade-in slide-in-from-top-2">
+          <p className="text-sm font-bold text-[#082219] mb-4">✨ {rec.reason}</p>
+          <button onClick={() => onApply(rec.bags, rec.pickups)} className="w-full py-3 rounded-xl bg-[#082219] text-[#C5A059] text-xs font-black uppercase tracking-widest hover:bg-[#C5A059] hover:text-[#082219] transition-all">Apply Recommendation</button>
+        </div>
+      ) : (
+        <div className="flex justify-end mt-4">
+          <button onClick={findPlan} disabled={loading || !input.trim()} className="px-6 py-3 rounded-xl bg-[#082219] text-[#C5A059] text-xs font-black uppercase tracking-widest disabled:opacity-50 transition-all">
+            {loading ? <Loader2 size={16} className="animate-spin" /> : "Find My Plan"}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+// --- 4. MAIN APPLICATION ---
+export default function App() {
+  const [step, setStep] = useState(1);
+  const [useTrial, setUseTrial] = useState(true);
+  const [selectedBags, setSelectedBags] = useState(null);
+  const [selectedDetergent, setSelectedDetergent] = useState(null);
+  const [selectedPickups, setSelectedPickups] = useState(null);
+  const [billingCycle, setBillingCycle] = useState(1);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [isSuccess, setIsSuccess] = useState(false);
+  const [isConfirming, setIsConfirming] = useState(false);
+  const [pickupDates, setPickupDates] = useState([]);
+  const [pickupTimes, setPickupTimes] = useState([]);
+  const [showPlanFinder, setShowPlanFinder] = useState(false);
+  const [customerName, setCustomerName] = useState('');
+  const [customerEmail, setCustomerEmail] = useState('');
+  const [customerPhone, setCustomerPhone] = useState('');
+  const [customerAddress, setCustomerAddress] = useState('');
+  const [customerPostCode, setCustomerPostCode] = useState('');
+  const [customerUnit, setCustomerUnit] = useState('');
+  const [driverInstructions, setDriverInstructions] = useState('');
+  const [nameError, setNameError] = useState('');
+  const [emailError, setEmailError] = useState('');
+  const [phoneError, setPhoneError] = useState('');
+  const [addressError, setAddressError] = useState('');
+  const [postCodeError, setPostCodeError] = useState('');
+  const [checkoutError, setCheckoutError] = useState('');
+  // Derived Values
+  const currentPlan = (selectedBags && selectedPickups) ? CONFIG.PRICING_DATA[selectedBags][selectedPickups] : null;
+  const standardPrice = (selectedBags && selectedPickups) ? (selectedBags * CONFIG.BAG_WEIGHT_KG * CONFIG.STANDARD_PRICE_PER_KG) + (selectedPickups * CONFIG.STANDARD_DELIVERY_FEE) : 0;
+  const currentDiscount = CONFIG.DISCOUNTS[billingCycle];
+  const discountedMonthly = currentPlan ? currentPlan.total * (1 - currentDiscount) : 0;
+  const upfrontTotal = discountedMonthly * billingCycle;
+  const savingsPerMonth = standardPrice - discountedMonthly;
+  const todayPay = (useTrial && billingCycle === 1) ? CONFIG.TRIAL_PRICE : upfrontTotal;
+  const timeSlotOptions = ["Morning (8am - 12pm)", "Afternoon (12pm - 4pm)", "Evening (6pm - 10pm)"];
+  // Logic Handlers
+  const handleSelect = (setter, val, nextStep) => {
+    setter(val);
+    if (nextStep) setStep(nextStep);
+  };
+  const validateForm = () => {
+    let valid = true;
+    if (!customerName.trim()) { setNameError('Name is required'); valid = false; } else { setNameError(''); }
+    if (!customerEmail.trim()) { setEmailError('Email is required'); valid = false; }
+    else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(customerEmail)) { setEmailError('Enter a valid email'); valid = false; }
+    else { setEmailError(''); }
+    if (!customerPhone.trim()) { setPhoneError('Phone number is required'); valid = false; }
+    else if (customerPhone.replace(/\D/g,'').length < 10) { setPhoneError('Enter a valid phone number'); valid = false; }
+    else { setPhoneError(''); }
+    if (!customerAddress.trim()) { setAddressError('Street address is required'); valid = false; } else { setAddressError(''); }
+    if (!customerPostCode.trim()) { setPostCodeError('Postcode is required'); valid = false; } else { setPostCodeError(''); }
+    return valid;
+  };
+  const handleSubscribe = async () => {
+    if (!validateForm()) return;
+    setIsProcessing(true);
+    setCheckoutError('');
+    try {
+      const res = await fetch(`${CONFIG.BACKEND_URL}/api/checkout`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          customer: {
+            name: customerName,
+            email: customerEmail,
+            phone: customerPhone,
+            address: customerAddress,
+            postCode: customerPostCode,
+            unit: customerUnit,
+            driverInstructions: driverInstructions,
+          },
+          plan: { bags: selectedBags, pickups: selectedPickups, detergent: selectedDetergent },
+          pickup: {
+            date: pickupDates[0],
+            time: pickupTimes[0] || timeSlotOptions[0],
+          }
+        })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Something went wrong');
+      setIsProcessing(false);
       setIsSuccess(true);
+    } catch (err) {
+      setIsProcessing(false);
+      setCheckoutError(err.message);
     }
   };
-
-  const currentPlan = selectedBags && selectedPickups ? pricingData[selectedBags][selectedPickups] : null;
-
-  const standardPricePerKg = 3.5;
-  const standardDeliveryFee = 2; 
-  const normalCost = selectedBags && selectedPickups ? (selectedBags * 10 * standardPricePerKg) + (selectedPickups * standardDeliveryFee) : 0;
-  
-  // Billing cycle calculations
-  const discountRates = { 1: 0, 3: 0.05, 6: 0.10, 12: 0.20 };
-  const currentDiscount = discountRates[billingCycle];
-  
-  const discountedMonthly = currentPlan ? currentPlan.total * (1 - currentDiscount) : 0;
-  const discountedPerBag = currentPlan ? currentPlan.perBag * (1 - currentDiscount) : 0;
-  const upfrontTotal = discountedMonthly * billingCycle;
-  
-  // Total savings compared to pay-as-you-go standard rates over the selected period
-  const totalSavings = currentPlan ? (normalCost * billingCycle) - upfrontTotal : 0;
-  const savingsPerMonth = totalSavings / billingCycle;
-
-  // Scheduling Logic Helpers
-  const formatDate = (dateString) => {
-    if (!dateString) return "";
-    // Parse date properly to avoid timezone shifts
-    const [year, month, day] = dateString.split('-');
-    const date = new Date(year, month - 1, day);
-    return new Intl.DateTimeFormat('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }).format(date);
-  };
-
-  const getIntervalText = () => {
-    if (selectedPickups === 1) return "Subsequent months will renew on this same exact date.";
-    if (selectedPickups === 2) return "Your 2 pickups are automatically spaced ~15 days apart. You can adjust the 2nd date below.";
-    if (selectedPickups === 3) return "Your 3 pickups are automatically spaced ~10 days apart. You can adjust them below.";
-    if (selectedPickups === 4) return "Your 4 pickups are automatically spaced weekly (7 days apart). You can adjust them below.";
-    return "";
-  };
-
-  const timeSlotOptions = [
-    "Morning (8am - 12pm)",
-    "Afternoon (12pm - 4pm)",
-    "Evening (6pm - 10pm)"
-  ];
-
   const handleFirstDateChange = (e) => {
     const val = e.target.value;
     if (!val) {
@@ -253,683 +288,342 @@ You MUST output ONLY a valid JSON object matching this exact structure:
       setPickupTimes([]);
       return;
     }
-
-    // Always start by setting the first date
-    const dates = [val];
-    const baseDate = new Date(val);
-    
-    let intervalDays = 0;
-    if (selectedPickups === 2) intervalDays = 15;
-    if (selectedPickups === 3) intervalDays = 10;
-    if (selectedPickups === 4) intervalDays = 7;
-    
-    // Auto-calculate the remaining dates and push to array
-    for (let i = 1; i < selectedPickups; i++) {
-      const nextDate = new Date(baseDate);
-      nextDate.setDate(baseDate.getDate() + (intervalDays * i));
-      dates.push(nextDate.toISOString().split('T')[0]);
-    }
-    setPickupDates(dates);
-    
-    // Set default time slots for all pickups if not already set
-    if (pickupTimes.length !== selectedPickups) {
-      setPickupTimes(new Array(selectedPickups).fill(timeSlotOptions[0]));
-    }
+    setPickupDates([val]);
+    setPickupTimes([timeSlotOptions[0]]);
   };
-
-  const handleOtherDateChange = (idx, val) => {
-    const newDates = [...pickupDates];
-    newDates[idx] = val;
-    setPickupDates(newDates);
-  };
-
   const handleTimeChange = (idx, val) => {
     const newTimes = [...pickupTimes];
     newTimes[idx] = val;
     setPickupTimes(newTimes);
   };
-
-  const isScheduleValid = pickupDates.length === selectedPickups && pickupDates.every(d => d !== "") && pickupTimes.every(t => t !== "");
-
-  // --- Render Functions for each step ---
-
+  const formatDate = (dateString) => {
+    if (!dateString) return "";
+    const date = new Date(dateString);
+    return new Intl.DateTimeFormat('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }).format(date);
+  };
+  const scrollToPlans = () => document.getElementById('subscription-plans')?.scrollIntoView({ behavior: 'smooth' });
+  // UI Step Renders
   const renderStep1 = () => (
-    <div className="space-y-4 animate-in fade-in slide-in-from-bottom-4 duration-500">
-      <div className="text-center mb-6">
-        <h2 className="text-2xl font-bold text-gray-900 tracking-tight">Choose your plan</h2>
-        <p className="text-gray-500 mt-2">Select how many bags you need to be serviced per month.</p>
-        
-        {/* Gemini AI Integration */}
-        <div className="mt-6 max-w-xl mx-auto">
-          {!showAiHelper ? (
-            <button 
-              onClick={() => setShowAiHelper(true)}
-              className="inline-flex items-center gap-2 px-4 py-2 rounded-full text-sm font-bold shadow-sm transition-all hover:scale-105"
-              style={{ backgroundColor: brand.copperLight, color: brand.copperHover }}
-            >
-              <Sparkles size={16} /> ✨ Not sure? Ask our AI Assistant
+    <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
+      <div className="flex flex-col md:flex-row items-center justify-between gap-8 bg-gray-50/50 p-8 rounded-[2rem] border border-gray-100">
+        <div className="flex-1 text-center md:text-left">
+          <div className="inline-flex items-center gap-2 mb-3 bg-[#C5A059] text-[#082219] px-4 py-1.5 rounded-full text-[11px] font-black uppercase tracking-[0.2em] shadow-md">
+            <Sparkles size={14} /> Start For £{CONFIG.TRIAL_PRICE}
+          </div>
+          <h2 className="text-3xl md:text-5xl font-black text-[#082219] uppercase italic tracking-tight">
+            {useTrial ? `Claim Your £${CONFIG.TRIAL_PRICE} Trial` : "Choose your plan"}
+          </h2>
+          <p className="text-gray-500 mt-3 font-medium text-sm md:text-base">
+            {useTrial ? `Pay just £${CONFIG.TRIAL_PRICE} today to test the service.` : "Select your monthly volume to subscribe directly."}
+          </p>
+
+          <div className="mt-6 mb-4 bg-gray-100/80 p-1.5 rounded-2xl inline-flex w-full max-w-sm border border-gray-200">
+            <button onClick={() => setUseTrial(true)} className={`flex-1 py-3 px-2 rounded-xl text-[11px] font-black uppercase tracking-widest transition-all ${useTrial ? 'bg-[#082219] text-[#C5A059] shadow-md' : 'text-gray-500'}`}>
+              {CONFIG.TRIAL_DAYS}-Day Trial (£{CONFIG.TRIAL_PRICE})
+            </button>
+            <button onClick={() => setUseTrial(false)} className={`flex-1 py-3 px-2 rounded-xl text-[11px] font-black uppercase tracking-widest transition-all ${!useTrial ? 'bg-white text-[#082219] shadow-md border border-gray-200' : 'text-gray-500'}`}>
+              Skip Trial
+            </button>
+          </div>
+          {!showPlanFinder ? (
+            <button onClick={() => setShowPlanFinder(true)} className="block mt-4 text-xs font-bold text-gray-400 hover:text-[#082219] transition-colors underline underline-offset-4 mx-auto md:mx-0">
+              Not sure how many bags? Try our Plan Finder
             </button>
           ) : (
-            <div className="bg-gray-50 p-4 rounded-2xl border border-gray-100 text-left animate-in fade-in zoom-in duration-300">
-              <div className="flex items-center gap-2 mb-3">
-                <Bot size={20} style={{ color: brand.copper }} />
-                <span className="font-bold text-gray-800">Flydry AI Helper</span>
-              </div>
-              <textarea 
-                value={aiInput}
-                onChange={(e) => {
-                  setAiInput(e.target.value);
-                  // Clear the old recommendation and errors as soon as they start typing something new
-                  setAiRecommendation(null);
-                  setAiError("");
-                }}
-                placeholder="E.g., I live with my partner, we work out a lot and do laundry every 2 weeks..."
-                className="w-full p-3 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 resize-none text-sm"
-                rows={2}
-              />
-              {aiError && <p className="text-orange-500 font-medium text-xs mt-2">{aiError}</p>}
-              
-              {aiRecommendation ? (
-                <div className="mt-4 p-4 rounded-xl shadow-sm border" style={{ backgroundColor: brand.greenLight, borderColor: brand.green }}>
-                  <p className="text-sm font-medium mb-3" style={{ color: brand.green }}>
-                    <Sparkles size={14} className="inline mr-1" />
-                    {aiRecommendation.reasoning}
-                  </p>
-                  <div className="flex flex-col sm:flex-row items-center justify-between gap-3">
-                    <span className="font-bold text-gray-900 text-sm">
-                      Recommendation: {aiRecommendation.bags} Bags, {aiRecommendation.pickups} Pickups
-                    </span>
-                    <button 
-                      onClick={applyAiRecommendation}
-                      className="w-full sm:w-auto px-4 py-2 rounded-full text-white text-sm font-bold transition-all hover:scale-105"
-                      style={{ backgroundColor: brand.copper }}
-                    >
-                      Apply Plan
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                <div className="flex justify-end mt-3">
-                  <button 
-                    onClick={getAiRecommendation}
-                    disabled={isAiLoading || !aiInput.trim()}
-                    className="inline-flex items-center gap-2 px-4 py-2 rounded-full text-white text-sm font-bold disabled:opacity-50 transition-all"
-                    style={{ backgroundColor: brand.copper }}
-                  >
-                    {isAiLoading ? <Loader2 size={16} className="animate-spin" /> : <Sparkles size={16} />}
-                    {isAiLoading ? "Thinking..." : "Get Recommendation"}
-                  </button>
-                </div>
-              )}
-            </div>
+            <PlanFinder onApply={(b, p) => { setSelectedBags(b); setSelectedPickups(p); setStep(2); }} />
           )}
         </div>
-      </div>
-      
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        {[1, 2, 4].map((bagCount) => {
-          // Calculate the lowest possible monthly price for this bag tier
-          const minPrice = Math.min(...Object.values(pricingData[bagCount]).map(p => p.total));
-          
-          return (
-          <button
-            key={bagCount}
-            onClick={() => handleBagSelect(bagCount)}
-            className={`flex flex-col items-center justify-center p-6 border-2 rounded-2xl transition-all duration-200 
-              ${selectedBags === bagCount 
-                ? 'shadow-md transform scale-105' 
-                : 'border-gray-200 bg-white hover:border-gray-300 hover:shadow-sm'}`}
-            style={selectedBags === bagCount ? { borderColor: brand.copper, backgroundColor: brand.copperLight } : {}}
-          >
-            <div 
-              className={`p-4 rounded-full mb-3 ${selectedBags !== bagCount ? 'bg-gray-100 text-gray-400' : ''}`}
-              style={selectedBags === bagCount ? { backgroundColor: brand.copper, color: 'white' } : {}}
-            >
-              <ShoppingBag size={32} strokeWidth={1.5} />
-            </div>
-            <div className="text-center">
-              <span className="text-xl font-bold text-gray-900">{bagCount} {bagCount === 1 ? 'Bag' : 'Bags'}</span>
-              <div className="text-xs text-gray-500 font-medium tracking-wide">({bagCount * 10} KG)</div>
-            </div>
-            
-            <div className="mt-4 flex flex-col items-center w-full">
-              <div 
-                className={`text-sm font-black px-3 py-1 rounded-full border ${selectedBags === bagCount ? 'bg-white' : 'bg-gray-50 border-gray-100 text-gray-900'}`}
-                style={selectedBags === bagCount ? { color: brand.copperHover, borderColor: 'rgba(200, 144, 91, 0.3)' } : {}}
-              >
-                From £{minPrice}<span className="text-xs font-semibold opacity-80">/mo</span>
+        <div className="hidden md:flex w-48 h-48 relative" style={{ perspective: '600px' }}>
+          <div className="w-full h-full" style={{ transformStyle: 'preserve-3d', animation: 'coinFlip 10s ease-in-out infinite' }}>
+            {/* Front: 10KG Circle */}
+            <div className="absolute inset-0 rounded-full bg-[#082219] flex items-center justify-center border-4 border-[#C5A059]/20 shadow-2xl overflow-hidden" style={{ backfaceVisibility: 'hidden' }}>
+              <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(197,160,89,0.2),transparent)]" />
+              <div className="text-center relative z-10">
+                <ShoppingBag size={32} className="text-[#C5A059] mx-auto mb-2" />
+                <span className="block text-4xl font-black text-white">{CONFIG.BAG_WEIGHT_KG}KG</span>
+                <span className="text-[10px] font-bold text-[#C5A059] uppercase tracking-widest">Signature Bag</span>
               </div>
-              <span className="text-xs text-gray-500 mt-2 text-center font-medium">
-                {bagCount === 1 ? 'Max 1 pickup' : bagCount === 2 ? '1 or 2 pickups' : '1 to 4 pickups'}
-              </span>
             </div>
-          </button>
-        )})}
+            {/* Back: Bag Photo */}
+            <div className="absolute inset-0 rounded-full overflow-hidden border-4 border-[#C5A059]/20 shadow-2xl" style={{ backfaceVisibility: 'hidden', transform: 'rotateY(180deg)' }}>
+              <img src="https://raw.githubusercontent.com/asho221/Flydry-website/main/FDbag.png" alt="Flydry Signature Bag" className="w-full h-full object-cover" />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+        {[1, 2, 4].map((bagCount) => {
+          const minPrice = Math.min(...Object.values(CONFIG.PRICING_DATA[bagCount]).map(p => p.total));
+          const isSelected = selectedBags === bagCount;
+          return (
+            <div
+              key={bagCount} tabIndex={0} role="button"
+              onKeyDown={useKeyboardAction(() => handleSelect(setSelectedBags, bagCount, 2))}
+              onClick={() => handleSelect(setSelectedBags, bagCount, 2)}
+              className={`group flex flex-col items-center p-8 border transition-all duration-300 rounded-[1.5rem] relative cursor-pointer outline-none focus:ring-2 focus:ring-[#C5A059]
+              ${isSelected ? 'bg-[#C5A059]/10 shadow-xl border-[#C5A059]' : 'bg-white border-gray-100 hover:border-[#C5A059]'}`}
+            >
+              <div className="text-center">
+                <span className="text-xl font-black text-[#082219] uppercase tracking-tight">{bagCount} {bagCount === 1 ? 'Bag' : 'Bags'}</span>
+                <div className="text-xs text-gray-500 font-bold tracking-widest uppercase mt-1">({bagCount * CONFIG.BAG_WEIGHT_KG} KG)</div>
+                {useTrial && bagCount > 1 && <div className="mt-2 inline-block text-[9px] text-[#C5A059] font-black uppercase tracking-widest bg-[#C5A059]/10 px-2 py-1 rounded border border-[#C5A059]/20">*Trial includes 1 bag</div>}
+              </div>
+              <div className="mt-5 flex flex-col items-center w-full pt-6 border-t border-gray-100 relative">
+                {useTrial ? (
+                  <>
+                    <div className="absolute -top-3 bg-[#082219] px-3 py-1 rounded-full text-[10px] text-[#C5A059] font-black uppercase shadow-md">1st Bag Trial</div>
+                    <div className="flex items-start gap-1 text-[#082219] mb-1"><span className="text-2xl font-bold mt-1">£</span><span className="text-5xl font-black leading-none">10</span></div>
+                    <div className="mt-3 text-[10px] font-bold text-gray-500 uppercase tracking-widest bg-gray-50 px-3 py-1.5 rounded-lg border border-gray-200 w-full text-center">Then £{minPrice}/mo</div>
+                  </>
+                ) : (
+                  <>
+                    <div className="text-xl font-black px-5 py-2.5 rounded-full border border-gray-200 bg-gray-50 text-gray-700 w-full text-center group-hover:bg-white group-hover:border-[#C5A059]/50 transition-all">£{minPrice}<span className="text-sm font-bold text-gray-500 ml-1">/mo</span></div>
+                    <span className="text-[10px] text-gray-400 mt-3 font-bold uppercase tracking-widest text-center">{bagCount === 1 ? 'Max 1 pickup' : `Flexible 1, 2 or 4 pickups`}</span>
+                  </>
+                )}
+              </div>
+            </div>
+          );
+        })}
       </div>
     </div>
   );
-
   const renderStep2 = () => {
-    const pickupOptions = Object.keys(pricingData[selectedBags]).map(Number);
-    
+    const opts = [
+      { id: 'bio', title: 'Premium Bio', desc: 'Tough on stains & odors', icon: Sparkles, recommended: true },
+      { id: 'eco', title: 'Eco-Friendly Non-Bio', desc: 'Gentle on planet & fabric', icon: Leaf },
+      { id: 'sensitive', title: 'Sensitive Skin', desc: 'Zero fragrance or dyes', icon: Shield }
+    ];
     return (
       <div className="space-y-4 animate-in fade-in slide-in-from-bottom-4 duration-500">
-        <div className="text-center mb-6">
-          <h2 className="text-2xl font-bold text-gray-900 tracking-tight">Select pick up frequency</h2>
-          <p className="text-gray-500 mt-2">How many times should we pick up your {selectedBags} {selectedBags === 1 ? 'bag' : 'bags'}?</p>
+        <div className="text-center mb-10">
+          <h2 className="text-3xl md:text-4xl font-black text-[#082219] uppercase italic tracking-tight">Choose your care</h2>
+          <p className="text-gray-500 mt-3 font-medium">Not sure? <strong className="text-[#082219]">Premium Bio</strong> is our standard, perfect for 95% of everyday laundry.</p>
         </div>
-
-        <div className="space-y-3 max-w-xl mx-auto">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 max-w-4xl mx-auto">
+          {opts.map((opt) => (
+            <div
+              key={opt.id} tabIndex={0} role="button"
+              onKeyDown={useKeyboardAction(() => handleSelect(setSelectedDetergent, opt.id, 3))}
+              onClick={() => handleSelect(setSelectedDetergent, opt.id, 3)}
+              className={`group relative flex flex-col items-center justify-center p-8 border transition-all duration-300 rounded-[1.5rem] cursor-pointer outline-none focus:ring-2 focus:ring-[#C5A059]
+                ${selectedDetergent === opt.id ? 'bg-[#C5A059]/10 border-[#C5A059]' : 'bg-white border-gray-100 hover:border-[#C5A059]'}`}
+            >
+              {opt.recommended && <div className="absolute -top-3.5 left-1/2 -translate-x-1/2 bg-[#082219] text-[#C5A059] text-[10px] font-black uppercase tracking-[0.2em] px-4 py-1.5 rounded-full shadow-md z-10 border border-[#C5A059]/20">Recommended Default</div>}
+              <div className={`w-16 h-16 rounded-full flex items-center justify-center mb-5 transition-colors ${selectedDetergent === opt.id ? 'bg-[#082219] text-[#C5A059]' : 'bg-gray-50 text-gray-400 group-hover:bg-[#082219] group-hover:text-[#C5A059]'}`}><opt.icon size={28} /></div>
+              <h3 className="font-black uppercase tracking-wide mb-2">{opt.title}</h3>
+              <p className="text-xs font-bold text-gray-400 tracking-widest uppercase text-center">{opt.desc}</p>
+            </div>
+          ))}
+        </div>
+        <div className="flex justify-start max-w-4xl mx-auto pt-8"><button onClick={() => setStep(1)} className="flex items-center gap-2 px-4 py-2 text-gray-400 hover:text-[#082219] font-bold uppercase tracking-widest text-sm"><ArrowLeft size={16} /> Back</button></div>
+      </div>
+    );
+  };
+  const renderStep3 = () => {
+    const pickupOptions = Object.keys(CONFIG.PRICING_DATA[selectedBags]).map(Number);
+    return (
+      <div className="space-y-4 animate-in fade-in slide-in-from-bottom-4 duration-500">
+        <div className="text-center mb-10">
+          <h2 className="text-3xl md:text-4xl font-black text-[#082219] uppercase italic tracking-tight">{useTrial ? "Select ongoing frequency" : "Select pick up frequency"}</h2>
+          <p className="text-gray-500 mt-3 font-medium">After your trial, how many times should we pick up your {selectedBags} {selectedBags === 1 ? 'bag' : 'bags'}?</p>
+        </div>
+        <div className="space-y-4 max-w-xl mx-auto">
           {pickupOptions.map((pickupCount) => {
-            const planDetails = pricingData[selectedBags][pickupCount];
+            const details = CONFIG.PRICING_DATA[selectedBags][pickupCount];
             const isSelected = selectedPickups === pickupCount;
-            
             return (
               <div
-                key={pickupCount}
-                onClick={() => handlePickupSelect(pickupCount)}
-                className={`flex items-center justify-between p-4 border-2 rounded-xl cursor-pointer transition-all duration-200
-                  ${isSelected ? 'shadow-md' : 'border-gray-200 bg-white hover:border-gray-300'}`}
-                style={isSelected ? { borderColor: brand.copper, backgroundColor: brand.copperLight } : {}}
+                key={pickupCount} tabIndex={0} role="button"
+                onKeyDown={useKeyboardAction(() => setSelectedPickups(pickupCount))}
+                onClick={() => setSelectedPickups(pickupCount)}
+                className={`group flex items-center justify-between p-5 border cursor-pointer transition-all duration-300 rounded-[1.5rem] outline-none focus:ring-2 focus:ring-[#C5A059]
+                  ${isSelected ? 'bg-[#C5A059]/10 border-[#C5A059]' : 'bg-white border-gray-100 hover:border-[#C5A059]'}`}
               >
-                <div className="flex items-center gap-3">
-                  <div 
-                    className={`p-2 rounded-full ${!isSelected ? 'bg-gray-100 text-gray-400' : ''}`}
-                    style={isSelected ? { backgroundColor: brand.copper, color: 'white' } : {}}
-                  >
-                    <Truck size={20} />
-                  </div>
+                <div className="flex items-center gap-4">
+                  <div className={`p-3 rounded-xl transition-all ${isSelected ? 'bg-[#082219] text-[#C5A059]' : 'bg-gray-100 text-gray-400'}`}><Truck size={20} /></div>
                   <div>
-                    <p className="font-bold text-gray-900">{pickupCount} {pickupCount === 1 ? 'Pick up' : 'Pick ups'}</p>
-                    <p className="text-sm text-gray-500 font-medium">£{planDetails.total} / month</p>
+                    <p className="font-black text-[#082219] uppercase tracking-wide">{pickupCount} {pickupCount === 1 ? 'Pick up' : 'Pick ups'}</p>
+                    <p className="text-sm text-gray-500 font-bold mt-0.5">£{details.total} / month</p>
                   </div>
                 </div>
-                
-                <div className="flex flex-col items-end" style={{ color: isSelected ? brand.copperHover : '#6b7280' }}>
-                  <span className="text-[10px] uppercase font-bold tracking-widest opacity-80">Per Bag</span>
-                  <span className="text-xl font-black leading-none mt-1">£{planDetails.perBag}</span>
-                  <span className="text-xs font-semibold opacity-80 mt-1">£{(planDetails.perBag / 10).toFixed(2)} / kg</span>
+                <div className="flex flex-col items-end">
+                  <span className="text-[10px] uppercase font-black tracking-widest text-gray-400">Per Bag</span>
+                  <span className="text-2xl font-black text-[#082219]">£{details.perBag}</span>
                 </div>
               </div>
             );
           })}
         </div>
-
-        <div className="flex justify-between items-center max-w-xl mx-auto pt-6">
-          <button 
-            onClick={() => setStep(1)}
-            className="flex items-center gap-2 px-4 py-2 text-gray-500 hover:text-gray-900 transition-colors font-medium"
-          >
-            <ArrowLeft size={16} /> Back
-          </button>
-          
-          <button
-            disabled={!selectedPickups}
-            onClick={handleNextToInfo}
-            className={`flex items-center gap-2 px-6 py-3 rounded-full font-bold transition-all
-              ${selectedPickups 
-                ? 'text-white shadow-md transform hover:scale-105' 
-                : 'bg-gray-100 text-gray-400 cursor-not-allowed'}`}
-            style={selectedPickups ? { backgroundColor: brand.copper } : {}}
-          >
-            Continue <ArrowRight size={16} />
-          </button>
+        <div className="flex justify-between items-center max-w-xl mx-auto pt-8">
+          <button onClick={() => setStep(2)} className="flex items-center gap-2 px-4 py-2 text-gray-400 hover:text-[#082219] font-bold uppercase tracking-widest text-sm"><ArrowLeft size={16} /> Back</button>
+          <button onClick={() => setStep(4)} disabled={!selectedPickups} className="flex items-center justify-center gap-3 px-8 py-4 rounded-xl font-black uppercase tracking-widest transition-all bg-[#082219] text-[#C5A059] hover:bg-[#C5A059] hover:text-[#082219] disabled:opacity-50 shadow-lg">Review Plan <ArrowRight size={18} /></button>
         </div>
       </div>
     );
   };
-
-  const renderStep3 = () => (
-    <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500 max-w-xl mx-auto">
-      <div className="text-center">
-        <h2 className="text-2xl font-bold text-gray-900 tracking-tight">Your Flydry Bag</h2>
-        <p className="text-gray-500 mt-2">How your monthly quota works</p>
-      </div>
-
-      <div className="bg-white border-2 rounded-2xl overflow-hidden shadow-sm" style={{ borderColor: brand.copperLight }}>
-        {/* Flydry Bag Image Container */}
-        <div className="h-48 bg-gray-100 w-full relative overflow-hidden">
-            <img 
-              // DEVELOPER NOTE: Replace the src below with the actual URL of the Flydry bag image hosted on your site
-              src="/flydry-bag.jpg" 
-              alt="Flydry Wash & Fold Bag" 
-              className="w-full h-full object-cover"
-              onError={(e) => { 
-                e.target.onerror = null; 
-                // Fallback placeholder just for the preview if the image isn't found
-                e.target.src = "https://images.unsplash.com/photo-1550963295-019d8a8a61c5?auto=format&fit=crop&q=80&w=800"; 
-                e.target.className = "w-full h-full object-cover opacity-80 mix-blend-luminosity";
-              }}
-            />
-            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-              <span className="text-white px-5 py-2.5 rounded-lg font-bold backdrop-blur-md shadow-2xl border border-white/20 uppercase tracking-widest text-sm" style={{ backgroundColor: 'rgba(200, 144, 91, 0.85)' }}>
-                Holds ~10kg
-              </span>
-            </div>
-        </div>
-        
-        <div className="p-5 space-y-5" style={{ backgroundColor: brand.copperLight }}>
-          <div className="flex gap-4 items-start">
-            <div className="mt-1 bg-white p-2.5 rounded-full shadow-sm shrink-0" style={{ color: brand.copper }}>
-              <ShoppingBag size={20} />
-            </div>
-            <div>
-              <h4 className="font-bold text-gray-900">Flexible Monthly Quota</h4>
-              <p className="text-sm text-gray-600 leading-relaxed mt-1 font-medium">
-                Each bag holds about 10kg. We weigh everything at our facility. If you pack a bit more (e.g., 12kg), no problem! We just deduct the extra from your overall monthly quota.
-              </p>
-            </div>
-          </div>
-          
-          <div className="flex gap-4 items-start">
-            <div className="mt-1 bg-white p-2.5 rounded-full shadow-sm shrink-0" style={{ color: brand.green }}>
-              <Calendar size={20} />
-            </div>
-            <div>
-              <h4 className="font-bold text-gray-900">Unused Quota Rolls Over</h4>
-              <p className="text-sm text-gray-600 leading-relaxed mt-1 font-medium">
-                Didn't use all your laundry allowance? If you leave more than 1/3rd of your monthly quota unused, it automatically rolls over to your next month!
-              </p>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div className="flex justify-between items-center pt-4">
-        <button 
-          onClick={() => setStep(2)}
-          className="flex items-center gap-2 px-4 py-2 text-gray-500 hover:text-gray-900 transition-colors font-medium"
-        >
-          <ArrowLeft size={16} /> Back
-        </button>
-        
-        <button
-          onClick={() => setStep(4)}
-          className="flex items-center gap-2 px-6 py-3 rounded-full font-bold text-white shadow-md transform hover:scale-105 transition-all"
-          style={{ backgroundColor: brand.copper }}
-        >
-          Review Plan <ArrowRight size={16} />
-        </button>
-      </div>
-    </div>
-  );
-
   const renderStep4 = () => (
     <div className="max-w-xl mx-auto space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
-      <div className="text-center">
-        <h2 className="text-2xl font-bold text-gray-900 tracking-tight">Order Summary</h2>
-        <p className="text-gray-500 mt-2">Review your subscription details</p>
+      <div className="text-center mb-10">
+        <h2 className="text-3xl md:text-4xl font-black text-[#082219] uppercase italic tracking-tight">Order Summary</h2>
+        <p className="text-gray-500 mt-3 font-medium">{useTrial ? `Review your trial and subscription details` : "Review your subscription details"}</p>
       </div>
-
-      <div className="grid grid-cols-2 gap-3 mb-6">
-        {[
-          { months: 1, label: 'Monthly', save: null },
-          { months: 3, label: '3 Months', save: 'Save 5%' },
-          { months: 6, label: '6 Months', save: 'Save 10%' },
-          { months: 12, label: 'Annual', save: 'Save 20%' }
-        ].map(opt => (
-          <button
-            key={opt.months}
-            onClick={() => setBillingCycle(opt.months)}
-            className={`flex flex-col items-center p-3 rounded-xl border-2 transition-all ${billingCycle === opt.months ? 'shadow-sm' : 'border-gray-100 bg-white hover:border-gray-200'}`}
-            style={billingCycle === opt.months ? { borderColor: brand.copper, backgroundColor: brand.copperLight } : {}}
-          >
-            <span className={`font-bold ${billingCycle === opt.months ? 'text-gray-900' : 'text-gray-600'}`}>{opt.label}</span>
-            {opt.save && (
-              <span className="text-[10px] font-bold uppercase tracking-wider mt-1 px-2 py-0.5 rounded-full" style={billingCycle === opt.months ? { backgroundColor: brand.copper, color: 'white' } : { backgroundColor: brand.greenLight, color: brand.green }}>{opt.save}</span>
-            )}
-          </button>
-        ))}
-      </div>
-
-      <div className="bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden">
-        <div className="p-6 border-b border-gray-100 space-y-5">
-          <div className="flex justify-between items-center">
-            <div className="flex items-center gap-3 text-gray-600">
-              <ShoppingBag size={18} style={{ color: brand.copper }} />
-              <span className="font-medium">Bags selected</span>
+      {!useTrial && (
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-6">
+          {[1, 3, 6, 12].map(m => (
+            <button key={m} onClick={() => setBillingCycle(m)} className={`py-3 rounded-xl text-[10px] font-black uppercase border transition-all ${billingCycle === m ? 'bg-[#082219] text-[#C5A059] border-[#082219]' : 'bg-white border-gray-200 text-gray-400'}`}>
+              {m === 1 ? 'Monthly' : m === 12 ? 'Annual' : `${m} Months`}
+              {CONFIG.DISCOUNTS[m] > 0 && <span className="block opacity-70">Save {CONFIG.DISCOUNTS[m]*100}%</span>}
+            </button>
+          ))}
+        </div>
+      )}
+      {useTrial && (
+        <div className="bg-[#082219] rounded-[1.5rem] shadow-xl overflow-hidden relative mb-6">
+          <div className="absolute top-0 right-0 bg-[#C5A059] text-[#082219] text-[9px] font-black uppercase tracking-[0.2em] px-4 py-1.5 rounded-bl-xl z-10">Step 1</div>
+          <div className="p-6 md:p-8">
+            <h3 className="text-white font-black uppercase tracking-widest text-lg mb-1">Phase 1: Your Trial</h3>
+            <p className="text-gray-400 text-sm font-medium mb-6">Test the service. Cancel easily if it's not for you.</p>
+            <div className="flex justify-between items-center mb-4 border-b border-white/10 pb-4">
+              <div className="flex items-center gap-3 text-gray-300"><ShoppingBag size={20} className="text-[#C5A059]" /><span className="font-bold uppercase tracking-wide text-sm">1x Signature Trial Bag</span></div>
+              <span className="text-gray-400 line-through font-bold">£{currentPlan?.perBag.toFixed(2)}</span>
             </div>
-            <span className="font-bold text-gray-900">{selectedBags} {selectedBags === 1 ? 'Bag' : 'Bags'}</span>
-          </div>
-          
-          <div className="flex justify-between items-center">
-            <div className="flex items-center gap-3 text-gray-600">
-              <Truck size={18} style={{ color: brand.copper }} />
-              <span className="font-medium">Pick up frequency</span>
-            </div>
-            <span className="font-bold text-gray-900">{selectedPickups} {selectedPickups === 1 ? 'time' : 'times'} / mo</span>
-          </div>
-
-          <div className="flex justify-between items-center">
-            <div className="flex items-center gap-3 text-gray-600">
-              <Calendar size={18} style={{ color: brand.copper }} />
-              <span className="font-medium">Price breakdown</span>
-            </div>
-            <div className="flex flex-col items-end">
-              <span className="text-sm font-bold px-3 py-1 rounded-md" style={{ backgroundColor: brand.copperLight, color: brand.copperHover }}>
-                £{discountedPerBag.toFixed(2)} / bag
-              </span>
-              <span className="text-xs text-gray-500 mt-1.5 font-semibold">
-                (£{(discountedPerBag / 10).toFixed(2)} / kg)
-              </span>
-            </div>
+            <div className="flex justify-between items-end mt-2"><span className="text-[10px] text-gray-400 uppercase tracking-widest font-black">Pay Today</span><span className="text-4xl font-black text-white">£{CONFIG.TRIAL_PRICE.toFixed(2)}</span></div>
           </div>
         </div>
-        
-        <div className="p-6 bg-gray-50 flex flex-col gap-4">
-          <div className="flex justify-between items-end">
+      )}
+      <div className="bg-white border-2 border-gray-100 rounded-[1.5rem] overflow-hidden relative p-8 shadow-sm">
+        <div className="absolute top-0 right-0 bg-gray-100 text-gray-500 text-[9px] font-black uppercase tracking-[0.2em] px-4 py-1.5 rounded-bl-xl">{useTrial ? 'Step 2' : 'Sub'}</div>
+        <h3 className="text-[#082219] font-black uppercase tracking-widest text-lg mb-1">{useTrial ? "Phase 2: Ongoing Routine" : "Your Subscription"}</h3>
+        <p className="text-gray-500 text-sm mb-6">{useTrial ? `Automatically starts ${CONFIG.TRIAL_DAYS} days after pickup.` : "Selected wash and fold routine."}</p>
+        <div className="space-y-4">
+          <div className="flex justify-between items-center"><div className="flex items-center gap-3 text-gray-500"><ShoppingBag size={18} /><span className="font-bold uppercase text-sm">Volume</span></div><div className="text-right"><span className="font-black text-[#082219] block">{selectedBags} {selectedBags === 1 ? 'Bag' : 'Bags'}</span><span className="text-[9px] font-bold text-gray-400 uppercase tracking-widest">~{CONFIG.BAG_WEIGHT_KG}kg per bag</span></div></div>
+          <div className="flex justify-between items-center"><div className="flex items-center gap-3 text-gray-500"><Truck size={18} /><span className="font-bold uppercase text-sm">Pickups</span></div><span className="font-black text-[#082219]">{selectedPickups}x / mo</span></div>
+        </div>
+        <div className="flex justify-between items-end mt-8 pt-6 border-t border-gray-100">
+          <span className="text-[10px] text-gray-400 uppercase font-black">Monthly Cost</span>
+          <div className="text-right">
+            {!useTrial && savingsPerMonth > 0 && <div className="text-sm text-gray-400 line-through font-bold mb-1">£{standardPrice.toFixed(2)}</div>}
+            <span className="text-3xl font-black text-[#082219]">£{discountedMonthly.toFixed(2)}<span className="text-sm text-gray-400 tracking-widest ml-1">/mo</span></span>
+          </div>
+        </div>
+      </div>
+      <div className="w-full bg-gray-50 border border-[#C5A059]/40 rounded-[1.2rem] p-6 mt-6 shadow-sm relative overflow-hidden">
+         <div className="absolute top-0 left-0 w-1 h-full bg-[#C5A059]" />
+         {useTrial && (
+           <div className="space-y-3 text-xs text-gray-600 font-medium leading-relaxed mb-6 border-b border-gray-200 pb-5">
+             <p>You have <strong>{CONFIG.TRIAL_DAYS} days</strong> from delivery to decide if {CONFIG.BRAND_NAME} is for you.</p>
+             <p>We will text you <strong>3 days before</strong> your trial ends. If you cancel, you won't pay another penny.</p>
+           </div>
+         )}
+         <h4 className="font-black text-[#082219] uppercase tracking-widest text-[10px] mb-3">The {CONFIG.BRAND_NAME} Guarantee</h4>
+         <ul className="space-y-2.5 text-[11px] text-gray-600 font-bold">
+           <li className="flex items-center gap-3"><CheckCircle2 size={16} className="text-[#C5A059]" /> No lock-in contracts. Cancel anytime in 3 clicks.</li>
+           <li className="flex items-center gap-3"><CheckCircle2 size={16} className="text-[#C5A059]" /> We text you 48hrs before any regular collection.</li>
+           <li className="flex items-center gap-3"><CheckCircle2 size={16} className="text-[#C5A059]" /> Unused bag quotas automatically roll over.</li>
+         </ul>
+      </div>
+      {/* Customer Details */}
+      <div className="bg-white border-2 border-gray-100 rounded-[1.5rem] overflow-hidden relative p-8 shadow-sm">
+        <h3 className="text-[#082219] font-black uppercase tracking-widest text-lg mb-1">Your Details</h3>
+        <p className="text-gray-500 text-sm mb-6">We'll use this to set up your account and schedule pickups.</p>
+        <div className="space-y-3">
+          <div>
+            <input type="text" placeholder="Full Name *" value={customerName} onChange={e=>{setCustomerName(e.target.value); if(nameError) setNameError('');}}
+              className={`w-full p-4 border-2 rounded-xl font-bold text-gray-800 text-sm transition-colors bg-gray-50 outline-none ${nameError?'border-red-300 focus:border-red-400':'border-gray-100 focus:border-[#C5A059]'}`}/>
+            {nameError && <p className="text-red-400 text-[10px] font-bold mt-1 ml-1">{nameError}</p>}
+          </div>
+          <div>
+            <input type="email" placeholder="Email Address *" value={customerEmail} onChange={e=>{setCustomerEmail(e.target.value); if(emailError) setEmailError('');}}
+              className={`w-full p-4 border-2 rounded-xl font-bold text-gray-800 text-sm transition-colors bg-gray-50 outline-none ${emailError?'border-red-300 focus:border-red-400':'border-gray-100 focus:border-[#C5A059]'}`}/>
+            {emailError && <p className="text-red-400 text-[10px] font-bold mt-1 ml-1">{emailError}</p>}
+          </div>
+          <div>
+            <input type="tel" placeholder="Phone Number *" value={customerPhone} onChange={e=>{setCustomerPhone(e.target.value); if(phoneError) setPhoneError('');}}
+              className={`w-full p-4 border-2 rounded-xl font-bold text-gray-800 text-sm transition-colors bg-gray-50 outline-none ${phoneError?'border-red-300 focus:border-red-400':'border-gray-100 focus:border-[#C5A059]'}`}/>
+            {phoneError && <p className="text-red-400 text-[10px] font-bold mt-1 ml-1">{phoneError}</p>}
+          </div>
+          <div>
+            <input type="text" placeholder="Street Address *" value={customerAddress} onChange={e=>{setCustomerAddress(e.target.value); if(addressError) setAddressError('');}}
+              className={`w-full p-4 border-2 rounded-xl font-bold text-gray-800 text-sm transition-colors bg-gray-50 outline-none ${addressError?'border-red-300 focus:border-red-400':'border-gray-100 focus:border-[#C5A059]'}`}/>
+            {addressError && <p className="text-red-400 text-[10px] font-bold mt-1 ml-1">{addressError}</p>}
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <input type="text" placeholder="Flat / Unit" value={customerUnit} onChange={e=>setCustomerUnit(e.target.value)}
+              className="w-full p-4 border-2 border-gray-100 rounded-xl font-bold text-gray-800 text-sm transition-colors bg-gray-50 outline-none focus:border-[#C5A059]"/>
             <div>
-              <p className="text-xs text-gray-500 uppercase tracking-widest font-bold">Equivalent to</p>
-              {savingsPerMonth > 0 && (
-                <div className="inline-block mt-2 px-3 py-1 rounded-full text-sm font-bold shadow-sm" style={{ backgroundColor: brand.greenLight, color: brand.green }}>
-                  Save £{savingsPerMonth.toFixed(2)} / month
-                </div>
-              )}
-            </div>
-            <div className="text-right flex items-end gap-3 justify-end">
-              {savingsPerMonth > 0 && (
-                <span className="text-xl text-gray-400 line-through mb-1 font-medium">£{normalCost.toFixed(2)}</span>
-              )}
-              <span className="text-4xl font-black text-gray-900 tracking-tight leading-none">£{discountedMonthly.toFixed(2)}</span>
-              <span className="text-gray-500 font-bold mb-1">/mo</span>
+              <input type="text" placeholder="Postcode *" value={customerPostCode} onChange={e=>{setCustomerPostCode(e.target.value); if(postCodeError) setPostCodeError('');}}
+                className={`w-full p-4 border-2 rounded-xl font-bold text-gray-800 text-sm transition-colors bg-gray-50 outline-none ${postCodeError?'border-red-300 focus:border-red-400':'border-gray-100 focus:border-[#C5A059]'}`}/>
+              {postCodeError && <p className="text-red-400 text-[10px] font-bold mt-1 ml-1">{postCodeError}</p>}
             </div>
           </div>
-          
-          {billingCycle > 1 && (
-            <div className="border-t border-gray-200 pt-4 mt-2 flex justify-between items-center">
-              <span className="text-sm font-bold text-gray-600">Billed upfront ({billingCycle} months)</span>
-              <span className="text-xl font-black text-gray-900">£{upfrontTotal.toFixed(2)}</span>
-            </div>
-          )}
+          <input type="text" placeholder="Driver Instructions (e.g. ring buzzer 4B, leave at door)" value={driverInstructions} onChange={e=>setDriverInstructions(e.target.value)}
+            className="w-full p-4 border-2 border-gray-100 rounded-xl font-bold text-gray-800 text-sm transition-colors bg-gray-50 outline-none focus:border-[#C5A059]"/>
         </div>
       </div>
 
-      <div className="pt-4 space-y-3">
-        <button
-          onClick={handleSubscribe}
-          disabled={isProcessing}
-          className="w-full flex justify-center items-center gap-2 text-white py-4 rounded-xl font-bold text-lg shadow-lg hover:shadow-xl transition-all disabled:opacity-70 disabled:cursor-not-allowed"
-          style={{ backgroundColor: brand.copper }}
-        >
-          {isProcessing ? (
-            <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-white"></div>
-          ) : (
-            <>
-              <CreditCard size={20} />
-              Pay £{upfrontTotal.toFixed(2)} Today
-            </>
+      {/* First Pickup */}
+      <div className="bg-white border-2 border-gray-100 rounded-[1.5rem] overflow-hidden relative p-8 shadow-sm">
+        <h3 className="text-[#082219] font-black uppercase tracking-widest text-lg mb-1">First Pickup</h3>
+        <p className="text-gray-500 text-sm mb-6">When should we collect your first bag?</p>
+        <div className="flex flex-col sm:flex-row gap-3">
+          <input type="date" value={pickupDates[0]||''} onChange={handleFirstDateChange}
+            min={new Date(Date.now()+86400000).toISOString().split('T')[0]}
+            className="w-full sm:w-1/2 p-4 border-2 border-gray-100 rounded-xl font-bold text-gray-800 text-sm bg-gray-50 outline-none focus:border-[#C5A059]"/>
+          {pickupDates.length > 0 && (
+            <select value={pickupTimes[0]||''} onChange={(e)=>handleTimeChange(0,e.target.value)}
+              className="w-full sm:w-1/2 p-4 border-2 border-[#C5A059] rounded-xl font-bold text-gray-800 bg-white cursor-pointer uppercase tracking-wide text-sm outline-none">
+              {timeSlotOptions.map(slot=><option key={slot} value={slot}>{slot}</option>)}
+            </select>
           )}
+        </div>
+        {pickupDates[0] && <p className="text-[#082219] text-sm font-bold mt-3 ml-1">{formatDate(pickupDates[0])}</p>}
+      </div>
+
+      {checkoutError && (
+        <div className="bg-red-50 border border-red-200 text-red-700 text-sm font-bold p-4 rounded-xl">{checkoutError}</div>
+      )}
+      <div className="pt-6 space-y-4">
+        <button onClick={handleSubscribe} disabled={isProcessing || !pickupDates[0]} className="w-full flex justify-center items-center gap-3 px-8 py-5 rounded-xl font-black uppercase tracking-widest transition-all bg-[#082219] text-[#C5A059] hover:bg-[#C5A059] hover:text-[#082219] shadow-xl disabled:opacity-70">
+          {isProcessing ? <Loader2 size={24} className="animate-spin" /> : <><CreditCard size={20} /> {useTrial ? `Start Trial - Pay £${todayPay.toFixed(2)} Today` : `Subscribe - Pay £${todayPay.toFixed(2)} Today`}</>}
         </button>
-        <button 
-          onClick={() => setStep(2)}
-          className="w-full text-center text-gray-500 hover:text-gray-900 py-2 font-semibold transition-colors"
-        >
-          Modify Selection
-        </button>
+        <button onClick={() => setStep(3)} className="w-full text-center text-gray-400 hover:text-[#082219] py-2 font-bold uppercase tracking-widest text-xs transition-colors">Modify Selection</button>
       </div>
     </div>
   );
-
-  const renderStep5 = () => {
-    const today = new Date();
-    today.setDate(today.getDate() + 1); // Minimum date is tomorrow
-    const minDateString = today.toISOString().split('T')[0];
-
-    const upsellTotal = selectedUpsells.reduce((total, id) => {
-      const item = upsellOptions.find(u => u.id === id);
-      return total + (item ? item.discounted : 0);
-    }, 0);
-
-    return (
-      <div className="max-w-xl mx-auto space-y-6 animate-in fade-in slide-in-from-right-4 duration-500">
-        <div className="text-center">
-          <div className="mx-auto w-16 h-16 rounded-full flex items-center justify-center mb-4 shadow-sm" style={{ backgroundColor: brand.greenLight, color: brand.green }}>
-            <CheckCircle size={32} />
-          </div>
-          <h2 className="text-2xl font-bold text-gray-900 tracking-tight">Payment Successful!</h2>
-          <p className="text-gray-500 mt-2">Let's schedule your {selectedPickups} monthly {selectedPickups === 1 ? 'pickup' : 'pickups'}.</p>
-        </div>
-
-        <div className="bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden p-6 space-y-5">
-           <div>
-             <label className="block text-sm font-bold text-gray-900 mb-2">Select your first pickup date & time</label>
-             <div className="flex flex-col sm:flex-row gap-3">
-               <input 
-                 type="date" 
-                 min={minDateString}
-                 value={pickupDates[0] || ""}
-                 onChange={handleFirstDateChange}
-                 className="w-full sm:w-1/2 p-4 border-2 rounded-xl border-gray-200 focus:outline-none focus:ring-0 text-gray-800 font-medium transition-colors"
-                 style={{ 
-                   borderColor: pickupDates[0] ? brand.copper : '#e5e7eb',
-                   backgroundColor: pickupDates[0] ? brand.copperLight : 'white'
-                 }}
-               />
-               {pickupDates.length > 0 && (
-                 <select
-                   value={pickupTimes[0] || ""}
-                   onChange={(e) => handleTimeChange(0, e.target.value)}
-                   className="w-full sm:w-1/2 p-4 border-2 rounded-xl border-gray-200 focus:outline-none focus:ring-0 text-gray-800 font-medium transition-colors bg-white cursor-pointer"
-                   style={{ borderColor: brand.copper }}
-                 >
-                   {timeSlotOptions.map(slot => (
-                     <option key={slot} value={slot}>{slot}</option>
-                   ))}
-                 </select>
-               )}
-             </div>
-           </div>
-           
-           {pickupDates.length > 0 && selectedPickups > 1 && (
-             <div className="mt-6 pt-6 border-t border-gray-100 animate-in fade-in slide-in-from-top-2 duration-300">
-                <h4 className="text-sm font-bold text-gray-900 mb-1">Your schedule this month:</h4>
-                <p className="text-xs text-gray-500 mb-4">{getIntervalText()}</p>
-                <div className="space-y-3">
-                  {pickupDates.map((dateStr, idx) => {
-                    if (idx === 0) return null; // Skip first date since it's above
-                    return (
-                      <div key={idx} className="flex flex-col sm:flex-row sm:items-center gap-3 p-4 sm:p-3 rounded-xl bg-gray-50 border border-gray-100">
-                        <div className="hidden sm:flex w-8 h-8 rounded-full items-center justify-center text-sm font-bold shadow-sm shrink-0" style={{ backgroundColor: brand.copper, color: 'white' }}>
-                          {idx + 1}
-                        </div>
-                        <div className="flex-1 flex flex-col sm:flex-row gap-2">
-                           <input 
-                             type="date"
-                             min={pickupDates[idx-1] || minDateString} // Prevent picking a date before the previous pickup
-                             value={dateStr}
-                             onChange={(e) => handleOtherDateChange(idx, e.target.value)}
-                             className="w-full sm:w-1/2 p-3 sm:p-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-1 text-gray-800 font-medium bg-white"
-                             style={{ outlineColor: brand.copper }}
-                           />
-                           <select
-                             value={pickupTimes[idx] || ""}
-                             onChange={(e) => handleTimeChange(idx, e.target.value)}
-                             className="w-full sm:w-1/2 p-3 sm:p-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-1 text-gray-800 font-medium bg-white cursor-pointer"
-                             style={{ outlineColor: brand.copper }}
-                           >
-                             {timeSlotOptions.map(slot => (
-                               <option key={slot} value={slot}>{slot}</option>
-                             ))}
-                           </select>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-                <div className="mt-5 flex gap-3 items-start p-4 rounded-xl shadow-sm" style={{ backgroundColor: brand.greenLight }}>
-                   <Clock size={18} className="shrink-0 mt-0.5" style={{ color: brand.green }} />
-                   <p className="text-xs font-semibold leading-relaxed" style={{ color: brand.green }}>
-                     Don't worry! You can easily change these dates later from your dashboard, up to 48 hours before your scheduled pickup time.
-                   </p>
-                </div>
-             </div>
-           )}
-
-           {pickupDates.length > 0 && selectedPickups === 1 && (
-             <div className="mt-4 flex gap-3 items-start p-4 rounded-xl shadow-sm" style={{ backgroundColor: brand.greenLight }}>
-               <Clock size={18} className="shrink-0 mt-0.5" style={{ color: brand.green }} />
-               <p className="text-xs font-semibold leading-relaxed" style={{ color: brand.green }}>
-                 {getIntervalText()} Don't worry, you can easily reschedule later from your dashboard up to 48 hours before.
-               </p>
-             </div>
-           )}
-
-           {/* Upsell Section - Appears after a date is picked */}
-           {pickupDates.length > 0 && (
-             <div className="mt-6 pt-6 border-t border-gray-100 animate-in fade-in duration-500">
-               <div className="flex justify-between items-end mb-4">
-                 <div>
-                   <h4 className="text-sm font-bold text-gray-900">Need anything else on your first pickup?</h4>
-                   <p className="text-xs text-gray-500 mt-1">Add one-off items now with your exclusive subscriber discount.</p>
-                 </div>
-               </div>
-               
-               <div className="space-y-3">
-                 {upsellOptions.map((upsell) => {
-                   const isSelected = selectedUpsells.includes(upsell.id);
-                   const Icon = upsell.icon;
-                   return (
-                     <div 
-                       key={upsell.id}
-                       onClick={() => toggleUpsell(upsell.id)}
-                       className={`flex items-center justify-between p-3 rounded-xl border-2 cursor-pointer transition-all duration-200 ${isSelected ? 'shadow-sm' : 'border-gray-100 hover:border-gray-200 bg-white'}`}
-                       style={isSelected ? { borderColor: brand.copper, backgroundColor: brand.copperLight } : {}}
-                     >
-                       <div className="flex items-center gap-3">
-                         <div className={`p-2 rounded-full ${isSelected ? 'bg-white shadow-sm' : 'bg-gray-50 text-gray-400'}`} style={isSelected ? { color: brand.copper } : {}}>
-                           <Icon size={18} />
-                         </div>
-                         <div>
-                           <p className={`font-bold text-sm ${isSelected ? 'text-gray-900' : 'text-gray-700'}`}>{upsell.title}</p>
-                           <div className="flex items-center gap-2 mt-0.5">
-                             <span className="text-xs text-gray-400 line-through">£{upsell.original}</span>
-                             <span className="text-sm font-black" style={{ color: isSelected ? brand.copperHover : brand.green }}>£{upsell.discounted}</span>
-                           </div>
-                         </div>
-                       </div>
-                       
-                       <div className={`w-6 h-6 rounded-full flex items-center justify-center border transition-colors ${isSelected ? 'border-transparent text-white' : 'border-gray-300 text-transparent'}`} style={isSelected ? { backgroundColor: brand.copper } : {}}>
-                         {isSelected ? <Check size={14} strokeWidth={3} /> : <Plus size={14} className="text-gray-400" />}
-                       </div>
-                     </div>
-                   );
-                 })}
-               </div>
-             </div>
-           )}
-
-        </div>
-
-        <div className="pt-2">
-          <button
-            onClick={handleConfirmSchedule}
-            disabled={!isScheduleValid || isProcessingUpsell}
-            className="w-full flex justify-center items-center gap-2 text-white py-4 rounded-xl font-bold text-lg shadow-lg hover:shadow-xl transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-            style={{ backgroundColor: brand.copper }}
-          >
-            {isProcessingUpsell ? (
-              <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-white"></div>
-            ) : (
-              <>
-                {selectedUpsells.length > 0 ? `Pay £${upsellTotal.toFixed(2)} & Confirm` : 'Confirm Schedule'} <ArrowRight size={20} />
-              </>
-            )}
-          </button>
-        </div>
+  const renderFinalSuccess = () => (
+    <div className="text-center py-12 animate-in zoom-in duration-500 space-y-6">
+      <div className="mx-auto w-24 h-24 rounded-full flex items-center justify-center mb-8 bg-[#082219] text-[#C5A059] shadow-xl"><CheckCircle size={48} /></div>
+      <h2 className="text-4xl font-black text-[#082219] uppercase italic tracking-tight">You're All Set!</h2>
+      <div className="text-gray-600 font-medium max-w-md mx-auto leading-relaxed space-y-4">
+        <p>Your first collection is scheduled for <strong>{formatDate(pickupDates[0])}</strong>. Our team will call you shortly to confirm your first collection and payment options.</p>
+        <div className="bg-gray-50 border border-gray-100 p-4 rounded-xl mt-4 text-sm font-black text-[#082219]">We've created your account and scheduled your pickup. You'll receive a confirmation email at {customerEmail}.</div>
       </div>
-    );
-  };
-
-  const renderSuccess = () => {
-    const upsellTotal = selectedUpsells.reduce((total, id) => {
-      const item = upsellOptions.find(u => u.id === id);
-      return total + (item ? item.discounted : 0);
-    }, 0);
-
-    return (
-      <div className="text-center py-10 animate-in zoom-in duration-500 space-y-6">
-        <div className="mx-auto w-24 h-24 rounded-full flex items-center justify-center mb-6 shadow-sm" style={{ backgroundColor: brand.greenLight, color: brand.green }}>
-          <CheckCircle size={48} />
-        </div>
-        <h2 className="text-3xl font-black text-gray-900 tracking-tight">You're All Set!</h2>
-        <div className="text-gray-600 font-medium max-w-sm mx-auto leading-relaxed space-y-3">
-          <p>
-            Your subscription is active and your first pickup is locked in for <strong>{formatDate(pickupDates[0])}</strong> between <strong>{pickupTimes[0]?.split(' ')[0]}</strong>. We'll send you a reminder beforehand.
-          </p>
-          {selectedUpsells.length > 0 && (
-            <div className="p-4 mt-4 rounded-xl text-sm shadow-sm border text-left" style={{ backgroundColor: brand.copperLight, borderColor: brand.copper, color: brand.copperHover }}>
-              <div className="flex justify-between items-start mb-3 border-b pb-2" style={{ borderColor: 'rgba(200, 144, 91, 0.2)' }}>
-                <span className="font-black tracking-tight">Separate Order Confirmed</span>
-                <span className="font-bold">£{upsellTotal.toFixed(2)} Paid</span>
+      <button onClick={() => window.location.reload()} className="mt-10 px-8 py-4 bg-gray-100 text-[#082219] font-black uppercase tracking-widest text-sm rounded-xl hover:bg-gray-200 shadow-sm transition-colors">Go to Dashboard</button>
+    </div>
+  );
+  return (
+    <div className="w-full flex flex-col bg-[#fdfdfd] overflow-x-hidden font-sans">
+      <SubscriptionHero onStart={scrollToPlans} />
+      <div id="subscription-plans" className="w-full bg-white flex flex-col items-center pb-24 px-4 sm:px-8">
+        <div className="w-full max-w-[1300px] bg-white rounded-[2rem] shadow-[0_10px_40px_-10px_rgba(8,34,25,0.06)] border border-gray-100 p-6 sm:p-12 relative">
+          {!isSuccess && step < 5 && (
+            <div className="flex justify-center items-center mb-12">
+              <div className="flex items-center w-full max-w-lg">
+                {[1, 2, 3, 4].map((num) => (
+                  <React.Fragment key={num}>
+                    <div className={`w-10 h-10 rounded-full flex items-center justify-center font-black text-sm transition-all duration-300 ${step >= num ? 'bg-[#082219] text-[#C5A059] shadow-md' : 'bg-gray-100 text-gray-400'}`}>{num}</div>
+                    {num < 4 && <div className={`flex-1 h-1.5 mx-2 rounded-full transition-all duration-500 ${step > num ? 'bg-[#082219]' : 'bg-gray-100'}`} />}
+                  </React.Fragment>
+                ))}
               </div>
-              <ul className="space-y-1.5">
-                {selectedUpsells.map(id => {
-                  const item = upsellOptions.find(u => u.id === id);
-                  return <li key={id} className="flex items-center gap-2"><Check size={14} /> {item.title}</li>;
-                })}
-              </ul>
-              <p className="mt-3 text-xs opacity-90 font-medium">These items will be collected alongside your first scheduled pickup.</p>
             </div>
           )}
-        </div>
-        <button
-          onClick={() => {
-            setStep(1);
-            setSelectedBags(null);
-            setSelectedPickups(null);
-            setBillingCycle(1);
-            setPickupDates([]);
-            setPickupTimes([]);
-            setSelectedUpsells([]);
-            setIsSuccess(false);
-          }}
-          className="mt-8 px-8 py-3 bg-gray-100 text-gray-800 font-bold rounded-full hover:bg-gray-200 transition-colors shadow-sm"
-        >
-          Go to Dashboard (Start Over)
-        </button>
-      </div>
-    );
-  };
-
-  return (
-    <div className="w-full bg-[#FDFDFD] flex flex-col items-center py-6 sm:py-8 px-4 sm:px-8 font-sans">
-      <div className="w-full max-w-4xl bg-white rounded-3xl shadow-xl border border-gray-100 overflow-hidden p-6 sm:p-10">
-        
-        {/* Progress Stepper */}
-        {(!isSuccess && step < 5) && (
-          <div className="flex justify-center items-center mb-10">
-            <div className="flex items-center w-full max-w-lg">
-              <div 
-                className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm shadow-sm ${step >= 1 ? 'text-white' : 'bg-gray-100 text-gray-400'}`}
-                style={step >= 1 ? { backgroundColor: brand.copper } : {}}
-              >1</div>
-              <div className={`flex-1 h-1 mx-1 sm:mx-2 rounded-full ${step >= 2 ? '' : 'bg-gray-100'}`} style={step >= 2 ? { backgroundColor: brand.copper } : {}}></div>
-              
-              <div 
-                className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm shadow-sm ${step >= 2 ? 'text-white' : 'bg-gray-100 text-gray-400'}`}
-                style={step >= 2 ? { backgroundColor: brand.copper } : {}}
-              >2</div>
-              <div className={`flex-1 h-1 mx-1 sm:mx-2 rounded-full ${step >= 3 ? '' : 'bg-gray-100'}`} style={step >= 3 ? { backgroundColor: brand.copper } : {}}></div>
-              
-              <div 
-                className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm shadow-sm ${step >= 3 ? 'text-white' : 'bg-gray-100 text-gray-400'}`}
-                style={step >= 3 ? { backgroundColor: brand.copper } : {}}
-              >3</div>
-              <div className={`flex-1 h-1 mx-1 sm:mx-2 rounded-full ${step >= 4 ? '' : 'bg-gray-100'}`} style={step >= 4 ? { backgroundColor: brand.copper } : {}}></div>
-              
-              <div 
-                className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm shadow-sm ${step >= 4 ? 'text-white' : 'bg-gray-100 text-gray-400'}`}
-                style={step >= 4 ? { backgroundColor: brand.copper } : {}}
-              >4</div>
-            </div>
+          <div className="min-h-[400px] flex flex-col justify-center">
+            {isSuccess ? renderFinalSuccess() : step === 1 ? renderStep1() : step === 2 ? renderStep2() : step === 3 ? renderStep3() : renderStep4()}
           </div>
-        )}
-
-        {/* Content Area */}
-        <div className="min-h-[400px] flex flex-col justify-center">
-          {isSuccess ? renderSuccess() : step === 1 ? renderStep1() : step === 2 ? renderStep2() : step === 3 ? renderStep3() : step === 4 ? renderStep4() : renderStep5()}
         </div>
-
       </div>
     </div>
   );
